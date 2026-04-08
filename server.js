@@ -18,7 +18,6 @@ mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/ghost-proto
   .then(() => console.log('MongoDB Connected'))
   .catch(err => console.log(err));
 
-// 🔥 UPDATED: Added messages array
 const postSchema = new mongoose.Schema({
     id: { type: String, required: true, unique: true },
     ghostId: String,
@@ -60,9 +59,14 @@ app.post('/api/posts', async (req, res) => {
     }
 });
 
-// 🔥 UPDATED: Socket Logic with DB sync
+// 🔥 LIVE TRACKING VARIABLES
+let onlineGhosts = 0;
+
 io.on('connection', (socket) => {
-    console.log('A ghost connected:', socket.id);
+    // 1. VOID STATS: Update online count when someone connects
+    onlineGhosts++;
+    io.emit('stats_update', { onlineGhosts });
+    console.log('A ghost connected. Total:', onlineGhosts);
 
     socket.on('join_thread', async (postId) => {
         socket.join(postId);
@@ -89,7 +93,19 @@ io.on('connection', (socket) => {
         io.to(data.roomId).emit('receive_message', data);
     });
 
+    // 2. TYPING INDICATOR EVENTS
+    socket.on('typing', (data) => {
+        socket.to(data.roomId).emit('typing', data.alias);
+    });
+    
+    socket.on('stop_typing', (roomId) => {
+        socket.to(roomId).emit('stop_typing');
+    });
+
     socket.on('disconnect', () => {
+        // Update online count when someone disconnects
+        onlineGhosts = Math.max(0, onlineGhosts - 1);
+        io.emit('stats_update', { onlineGhosts });
         console.log('Ghost disconnected');
     });
 });
