@@ -14,12 +14,11 @@ const io = new Server(server, {
     cors: { origin: "*" }
 });
 
-// Use local MongoDB or your cluster URL
 mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/ghost-protocol')
   .then(() => console.log('MongoDB Connected'))
   .catch(err => console.log(err));
 
-// Updated Schema to match your frontend types
+// 🔥 UPDATED: Added messages array
 const postSchema = new mongoose.Schema({
     id: { type: String, required: true, unique: true },
     ghostId: String,
@@ -30,20 +29,18 @@ const postSchema = new mongoose.Schema({
     createdAt: { type: Number, default: Date.now },
     lifespanMs: { type: Number, default: 7200000 },
     echoes: [String],
-    reported: { type: Boolean, default: false }
+    reported: { type: Boolean, default: false },
+    messages: { type: Array, default: [] } 
 });
 
 const Post = mongoose.model('Post', postSchema);
 
-// GET /api/posts - Fetch all active posts
 app.get('/api/posts', async (req, res) => {
     try {
         const currentTime = Date.now();
-        // Only fetch posts where createdAt + lifespan is greater than current time
         const activePosts = await Post.find().lean();
         const filteredPosts = activePosts.filter(p => (p.createdAt + p.lifespanMs) > currentTime);
         
-        // Sort newest first
         filteredPosts.sort((a, b) => b.createdAt - a.createdAt);
         res.json(filteredPosts);
     } catch (error) {
@@ -51,13 +48,11 @@ app.get('/api/posts', async (req, res) => {
     }
 });
 
-// POST /api/posts - Create a new spill
 app.post('/api/posts', async (req, res) => {
     try {
         const newPost = new Post(req.body);
         await newPost.save();
         
-        // Broadcast the new post to everyone
         io.emit('new_post', newPost);
         res.status(201).json(newPost);
     } catch (error) {
@@ -65,22 +60,32 @@ app.post('/api/posts', async (req, res) => {
     }
 });
 
-// Socket Logic
+// 🔥 UPDATED: Socket Logic with DB sync
 io.on('connection', (socket) => {
     console.log('A ghost connected:', socket.id);
 
-    // Chat Room Logic
-    socket.on('join_thread', (postId) => {
+    socket.on('join_thread', async (postId) => {
         socket.join(postId);
-        // Optionally notify others in room
+        try {
+            const post = await Post.findOne({ id: postId });
+            if (post && post.messages && post.messages.length > 0) {
+                socket.emit('chat_history', post.messages);
+            }
+        } catch (err) { console.error("History fetch error", err); }
     });
 
     socket.on('leave_thread', (postId) => {
         socket.leave(postId);
     });
 
-    socket.on('send_message', (data) => {
-        // data should have: roomId (postId), ghostId, alias, content, timestamp, id
+    socket.on('send_message', async (data) => {
+        try {
+            await Post.findOneAndUpdate(
+                { id: data.roomId },
+                { $push: { messages: data } }
+            );
+        } catch (err) { console.error("Message save error", err); }
+
         io.to(data.roomId).emit('receive_message', data);
     });
 
